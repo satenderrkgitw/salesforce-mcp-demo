@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { z } = require('zod');
@@ -20,6 +20,9 @@ function createServer() {
       inputSchema: {
         title: z.string().min(1).describe('Book title or topic to search for'),
       },
+      outputSchema: {
+        result: z.string().describe('Book search results'),
+      },
     },
     async ({ title }) => {
       const response = await fetch(
@@ -31,20 +34,27 @@ function createServer() {
       }
 
       const data = await response.json();
+
       const results = data.docs.slice(0, 5).map((book) => ({
         title: book.title,
         author: book.author_name?.[0] || 'Unknown author',
-        firstPublishYear: book.first_publish_year || null,
+        firstPublishYear: book.first_publish_year || 'Unknown year',
       }));
 
+      const output =
+        results.length > 0
+          ? results
+              .map(
+                (book, index) =>
+                  `${index + 1}. ${book.title} | ${book.author} | ${book.firstPublishYear}`
+              )
+              .join('\n')
+          : 'No books found';
+
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({ results }, null, 2),
-          },
-        ],
-        structuredContent: { results },
+        structuredContent: {
+          result: output,
+        },
       };
     }
   );
@@ -55,13 +65,23 @@ function createServer() {
       title: 'Get Exchange Rate',
       description: 'Get the latest exchange rate between two currencies.',
       inputSchema: {
-        from: z.string().length(3).describe('Source currency code, for example USD'),
-        to: z.string().length(3).describe('Target currency code, for example INR'),
+        from: z
+          .string()
+          .length(3)
+          .describe('Source currency code, for example USD'),
+        to: z
+          .string()
+          .length(3)
+          .describe('Target currency code, for example INR'),
+      },
+      outputSchema: {
+        result: z.string().describe('Exchange rate result'),
       },
     },
     async ({ from, to }) => {
       const fromCurrency = from.toUpperCase();
       const toCurrency = to.toUpperCase();
+
       const response = await fetch(
         `https://open.er-api.com/v6/latest/${encodeURIComponent(fromCurrency)}`
       );
@@ -74,25 +94,17 @@ function createServer() {
       const rate = data.rates?.[toCurrency];
 
       if (!rate) {
-        throw new Error(`No exchange rate found for ${fromCurrency} to ${toCurrency}`);
+        throw new Error(
+          `No exchange rate found for ${fromCurrency} to ${toCurrency}`
+        );
       }
 
-      const result = {
-        from: fromCurrency,
-        to: toCurrency,
-        rate,
-        provider: 'open.er-api.com',
-        lastUpdated: data.time_last_update_utc,
-      };
-
       return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-        structuredContent: result,
+        structuredContent: {
+          result:
+            `1 ${fromCurrency} = ${rate} ${toCurrency}\n` +
+            `Last Updated: ${data.time_last_update_utc}`,
+        },
       };
     }
   );
@@ -111,6 +123,7 @@ app.get('/', (req, res) => {
 
 app.post('/mcp', async (req, res) => {
   const server = createServer();
+
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
   });
@@ -125,10 +138,13 @@ app.post('/mcp', async (req, res) => {
 });
 
 app.get('/mcp', async (req, res) => {
-  res.status(405).json({ error: 'Use POST /mcp for MCP JSON-RPC requests.' });
+  res.status(405).json({
+    error: 'Use POST /mcp for MCP JSON-RPC requests.',
+  });
 });
 
 const port = process.env.PORT || 3000;
+
 app.listen(port, () => {
   console.log(`MCP server running at http://localhost:${port}`);
   console.log(`MCP endpoint: http://localhost:${port}/mcp`);
